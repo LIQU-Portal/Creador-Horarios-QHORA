@@ -1,5 +1,8 @@
-const CYCLE = "202620";
-const CENTER = "D";
+import type { Section } from "../../../lib/scheduler";
+import { currentAcademicCycle, toSiiauCycle } from "../../../lib/academic";
+
+const DEFAULT_CYCLE = currentAcademicCycle();
+const DEFAULT_CENTER = "D";
 const DAYS = ["L", "M", "I", "J", "V", "S"];
 type ParsedRow = { cells: string[]; children: Array<{ parentCell: number; row: ParsedRow }> };
 
@@ -23,9 +26,11 @@ function tableRows(html: string) {
       const parent = stack.at(-1);
       if (parent) parent.children.push({ parentCell: finished.parentCell, row }); else rows.push(row);
     } else if (/^<td\b/i.test(token)) {
-      const current = stack.at(-1); if (current) { current.cells.push(""); current.activeCell = current.cells.length - 1; }
+      const current = stack.at(-1);
+      if (current) { current.cells.push(""); current.activeCell = current.cells.length - 1; }
     } else if (/^<\/td/i.test(token)) {
-      const current = stack.at(-1); if (current) current.activeCell = null;
+      const current = stack.at(-1);
+      if (current) current.activeCell = null;
     } else if (!/^</.test(token)) {
       for (const current of stack) if (current.activeCell !== null) current.cells[current.activeCell] += ` ${token}`;
     }
@@ -35,33 +40,52 @@ function tableRows(html: string) {
 
 function toMinutes(raw: string) { return Number(raw.slice(0, 2)) * 60 + Number(raw.slice(2)); }
 
-function parseOffer(html: string, requestedKey: string) {
+function parseOffer(html: string) {
   return tableRows(html).filter((row) => row.cells.length >= 9 && /^\d+$/.test(row.cells[0])).map((row) => {
     const meetings = row.children.filter(({ parentCell, row: child }) => parentCell === 7 && child.cells.length >= 6 && /^\d{4}-\d{4}$/.test(child.cells[1])).flatMap(({ row: child }) => {
-      const marks = child.cells[2].split(/\s+/); const [startRaw, endRaw] = child.cells[1].split("-");
-      return marks.flatMap((mark, index) => mark !== "." && DAYS[index] ? [{ day: DAYS[index], time: child.cells[1], start: toMinutes(startRaw), end: toMinutes(endRaw), building: child.cells[3] || "", room: child.cells[4] || "" }] : []);
+      const marks = child.cells[2].split(/\s+/);
+      const [startRaw, endRaw] = child.cells[1].split("-");
+      return marks.flatMap((mark, index) => mark !== "." && DAYS[index] ? [{ day: DAYS[index], time: child.cells[1], start: toMinutes(startRaw), end: toMinutes(endRaw), building: child.cells[3] || "", room: child.cells[4] || "", period: child.cells[5] || "" }] : []);
     });
     const professors = row.children.filter(({ parentCell, row: child }) => parentCell === 8 && child.cells.length >= 2).map(({ row: child }) => child.cells.slice(1).join(" "));
-    return { nrc: row.cells[0], key: row.cells[1].toUpperCase(), name: row.cells[2], section: row.cells[3], credits: row.cells[4], capacity: Number(row.cells[5]), available: Number(row.cells[6]), meetings, professors };
-  }).filter((section) => section.key === requestedKey);
+    return { nrc: row.cells[0], key: row.cells[1].toUpperCase(), name: row.cells[2], section: row.cells[3], credits: row.cells[4], capacity: Number(row.cells[5]), available: Number(row.cells[6]), liveAvailable: Number(row.cells[6]), meetings, professors, source: "siiau" } satisfies Section;
+  });
 }
 
-async function fetchSubject(key: string) {
+async function fetchOffer(params: { key?: string; nrc?: string; cycle: string; center: string }) {
   const url = new URL("https://siiauescolar.siiau.udg.mx/wal/sspseca.consulta_oferta");
-  url.searchParams.set("ciclop", CYCLE); url.searchParams.set("cup", CENTER); url.searchParams.set("crsep", key); url.searchParams.set("mostrarp", "1000"); url.searchParams.set("ordenp", "2");
-  const response = await fetch(url, { cache: "no-store", headers: { "User-Agent": "CreadorHorariosLQUI/1.0" } });
-  if (!response.ok) throw new Error(`SIIAU respondió ${response.status} para ${key}.`);
-  const sections = parseOffer(await response.text(), key);
-  return { key, name: sections[0]?.name ?? "", sections };
+  url.searchParams.set("ciclop", params.cycle);
+  url.searchParams.set("cup", params.center);
+  if (params.key) url.searchParams.set("crsep", params.key);
+  if (params.nrc) url.searchParams.set("nrcp", params.nrc);
+  url.searchParams.set("mostrarp", "1000");
+  url.searchParams.set("ordenp", "2");
+  const response = await fetch(url, { cache: "no-store", headers: { "User-Agent": "QHORA/1.0" }, signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error(`SIIAU respondió ${response.status}.`);
+  return parseOffer(await response.text());
 }
 
 export async function GET(request: Request) {
-  const keys = Array.from(new Set((new URL(request.url).searchParams.get("claves") ?? "").toUpperCase().split(/[\s,;]+/).filter((key) => /^[A-Z]{1,3}\d{3,5}$/.test(key)))).slice(0, 10);
-  if (keys.length < 2) return Response.json({ error: "Proporciona entre 2 y 10 claves válidas." }, { status: 400 });
+  const url = new URL(request.url);
+  const keys = [...new Set((url.searchParams.get("claves") ?? "").toUpperCase().split(/[\s,;]+/).filter((key) => /^[A-Z]{1,3}\d{3,5}$/.test(key)))].slice(0, 20);
+  const nrcs = [...new Set((url.searchParams.get("nrcs") ?? "").split(/[\s,;]+/).filter((nrc) => /^\d{3,7}$/.test(nrc)))].slice(0, 20);
+  const cycle = toSiiauCycle(url.searchParams.get("ciclo") ?? DEFAULT_CYCLE);
+  const center = (url.searchParams.get("centro") ?? DEFAULT_CENTER).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3) || DEFAULT_CENTER;
+  if (keys.length === 0 && nrcs.length === 0) return Response.json({ error: "Proporciona al menos una clave o un NRC válido." }, { status: 400 });
+
   try {
-    const subjects = await Promise.all(keys.map(fetchSubject));
-    return Response.json({ cycle: CYCLE, center: CENTER, queriedAt: new Date().toISOString(), subjects });
+    const responses = await Promise.all([
+      ...keys.map((key) => fetchOffer({ key, cycle, center })),
+      ...nrcs.map((nrc) => fetchOffer({ nrc, cycle, center })),
+    ]);
+    const sections = responses.flat().filter((section, index, values) => values.findIndex((item) => item.nrc === section.nrc) === index);
+    const allKeys = [...new Set([...keys, ...sections.map((section) => section.key)])];
+    const subjects = allKeys.map((key) => ({ key, name: sections.find((section) => section.key === key)?.name ?? "", sections: sections.filter((section) => section.key === key) }));
+    return Response.json({ cycle, center, queriedAt: new Date().toISOString(), source: "siiau", subjects });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "No fue posible consultar la oferta académica." }, { status: 502 });
+    console.error("No fue posible consultar SIIAU:", error);
+    return Response.json({
+      error: "SIIAU no está disponible en este momento. Intenta de nuevo o carga un archivo para continuar con la oferta local.",
+    }, { status: 502 });
   }
 }

@@ -6,15 +6,18 @@
     "node": "22.x"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev.mjs",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint . --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern .next",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "check": "npm run lint && npm run test && npm run build"
   },
   "dependencies": {
-    "next": "16.2.6",
+    "next": "16.4.3",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "read-excel-file": "9.3.13"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.2.1",
@@ -22,10 +25,10 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.4.3",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3"
   },
   "type": "module",
-  "displayName": "Creador de Horarios para LQUI"
+  "displayName": "QHORA · Creador de Horarios Lic. Química"
 }
